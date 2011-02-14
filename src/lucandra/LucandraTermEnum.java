@@ -24,6 +24,7 @@ import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentNavigableMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.thrift.ColumnParent;
@@ -56,7 +57,6 @@ public class LucandraTermEnum extends TermEnum
         termCache        = readerCache.termCache; 
     }
 
-    @Override
     public boolean skipTo(Term term) throws IOException
     {
         if (term == null)
@@ -100,7 +100,7 @@ public class LucandraTermEnum extends TermEnum
         {
            termView = termCache.skipTo(currentTermEntry.getKey());
         
-           if(termView.size() < 2 && termView.firstEntry().getKey().equals(currentTermEntry.getKey()))
+           if(termView.size() < 2 && termView.firstEntry().getKey().equals(currentTermEntry))
            {
                currentTermEntry = null;
                return false;
@@ -153,7 +153,7 @@ public class LucandraTermEnum extends TermEnum
  
         ReadCommand rc = new SliceByNamesReadCommand(CassandraUtils.keySpace, key, parent, docNums);
  
-        List<Row> rows = CassandraUtils.robustRead(ConsistencyLevel.QUORUM, rc);
+        List<Row> rows = CassandraUtils.robustRead(ConsistencyLevel.ONE, rc);
  
         LucandraTermInfo[] termInfo = null;
  

@@ -351,7 +351,7 @@ public class IndexWriter
             ReadCommand rc = new SliceFromReadCommand(CassandraUtils.keySpace, key, cp, FBUtilities.EMPTY_BYTE_BUFFER,
                     FBUtilities.EMPTY_BYTE_BUFFER, false, Integer.MAX_VALUE);
 
-            List<Row> rows = StorageProxy.readProtocol(Arrays.asList(rc), ConsistencyLevel.QUORUM);
+            List<Row> rows = StorageProxy.readProtocol(Arrays.asList(rc), ConsistencyLevel.ONE);
 
             // delete by documentId
             for (Row row : rows)
@@ -393,7 +393,7 @@ public class IndexWriter
         ByteBuffer key = CassandraUtils.hashKeyBytes(indexNameBytes, CassandraUtils.delimeterBytes, docId);
 
         List<Row> rows = CassandraUtils.robustRead(key, CassandraUtils.metaColumnPath, Arrays
-                .asList(CassandraUtils.documentMetaFieldBytes), ConsistencyLevel.QUORUM);
+                .asList(CassandraUtils.documentMetaFieldBytes), ConsistencyLevel.ONE);
 
         if (rows.isEmpty() || rows.get(0).cf == null)
             return; // nothing to delete
@@ -464,7 +464,6 @@ public class IndexWriter
     }
 
     // write completed mutations
-    @SuppressWarnings("SleepWhileHoldingLock")
     public void commit(String indexName, boolean blocked)
     {
 
@@ -494,7 +493,7 @@ public class IndexWriter
                 return;
             }
 
-            CassandraUtils.robustInsert(ConsistencyLevel.QUORUM, rows.toArray(new RowMutation[] {}));
+            CassandraUtils.robustInsert(ConsistencyLevel.ONE, rows.toArray(new RowMutation[] {}));
 
             success = true;
         }

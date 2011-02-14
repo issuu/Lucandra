@@ -24,6 +24,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.cassandra.db.IColumn;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.DocIdSet;
@@ -40,7 +41,6 @@ public class LucandraFilter extends Filter {
         terms.add(term);
     }
 
-    @Override
     public DocIdSet getDocIdSet(IndexReader reader) throws IOException {
         OpenBitSet result = new OpenBitSet(reader.maxDoc());
 

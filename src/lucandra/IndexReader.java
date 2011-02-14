@@ -91,7 +91,6 @@ public class IndexReader extends org.apache.lucene.index.IndexReader
         setIndexName(name);
     }
 
-    @Override
     public synchronized IndexReader reopen() throws CorruptIndexException, IOException
     {
         clearCache();
@@ -276,7 +275,7 @@ public class IndexReader extends org.apache.lucene.index.IndexReader
                 }
             }
 
-            rows = StorageProxy.readProtocol(readCommands, ConsistencyLevel.QUORUM);
+            rows = StorageProxy.readProtocol(readCommands, ConsistencyLevel.ONE);
 
             // allow lookup by row
             Map<ByteBuffer, Row> rowMap = new HashMap<ByteBuffer, Row>(keyMap.size());

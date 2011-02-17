@@ -19,30 +19,21 @@
  */
 package lucandra;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.io.UnsupportedEncodingException;
+import java.io.*;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.cassandra.db.ReadCommand;
-import org.apache.cassandra.db.Row;
-import org.apache.cassandra.db.RowMutation;
-import org.apache.cassandra.db.SliceByNamesReadCommand;
+import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.filter.QueryPath;
 import org.apache.cassandra.service.StorageProxy;
 import org.apache.cassandra.thrift.ConsistencyLevel;
 import org.apache.cassandra.thrift.InvalidRequestException;
 import org.apache.cassandra.thrift.UnavailableException;
+import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.log4j.Logger;
 import org.apache.lucene.document.Fieldable;
@@ -51,7 +42,28 @@ import org.apache.lucene.index.Term;
 public class CassandraUtils
 {
 
-    public static final String               keySpace               = System.getProperty("lucandra.keyspace", "L");
+    public static final Properties           properties;
+    static
+    {      
+        try
+        {
+            
+            properties = new Properties();
+            properties.load(CassandraUtils.class.getClassLoader().getResourceAsStream("solandra.properties"));
+        
+        } 
+        catch (FileNotFoundException e)
+        {
+            throw new RuntimeException("Can't locate solandra.properties file");
+        }
+        catch (IOException e)
+        {
+            throw new RuntimeException("Error reading solandra.properties file");
+        }
+    }
+    
+    
+    public static final String               keySpace               = properties.getProperty("solandra.keyspace", "L");
     public static final String               termVecColumnFamily    = "TI";
     public static final String               docColumnFamily        = "Docs";
     public static final String               metaInfoColumnFamily   = "TL";
@@ -65,59 +77,53 @@ public class CassandraUtils
     public static final String               schemaKey              = "S";
     public static final String               cachedCol              = "CC";
     
-    public static final ByteBuffer           cachedColBytes         = ByteBuffer.wrap(cachedCol.getBytes());
-    public static final ByteBuffer           positionVectorKeyBytes = ByteBuffer.wrap(positionVectorKey.getBytes());
-    public static final ByteBuffer           offsetVectorKeyBytes   = ByteBuffer.wrap(offsetVectorKey.getBytes());
-    public static final ByteBuffer           termFrequencyKeyBytes  = ByteBuffer.wrap(termFrequencyKey.getBytes());
-    public static final ByteBuffer           normsKeyBytes          = ByteBuffer.wrap(normsKey.getBytes());
+    public static final ByteBuffer           cachedColBytes         = ByteBufferUtil.bytes(cachedCol);
+    public static final ByteBuffer           positionVectorKeyBytes = ByteBufferUtil.bytes(positionVectorKey);
+    public static final ByteBuffer           offsetVectorKeyBytes   = ByteBufferUtil.bytes(offsetVectorKey);
+    public static final ByteBuffer           termFrequencyKeyBytes  = ByteBufferUtil.bytes(termFrequencyKey);
+    public static final ByteBuffer           normsKeyBytes          = ByteBufferUtil.bytes(normsKey);
 
-    public static final ByteBuffer           schemaKeyBytes         = ByteBuffer.wrap(schemaKey.getBytes());
+    public static final ByteBuffer           schemaKeyBytes         = ByteBufferUtil.bytes(schemaKey);
     
-    public static final int                  maxDocsPerShard        = (int) Math.pow(2, 17);
-
     public static final List<Number>         emptyArray             = Arrays.asList(new Number[] {});
     public static final String               delimeter              = new String("\uffff");
-    public static final byte[]               delimeterBytes;
+    public static final byte[]               delimeterBytes         = ByteBufferUtil.bytes(delimeter).array();
 
     public static final String               finalToken             = new String("\ufffe\ufffe");
-    public static final ByteBuffer           finalTokenBytes;
+    public static final ByteBuffer           finalTokenBytes        = ByteBufferUtil.bytes(finalToken);
 
-    public static final String               documentIdField        = System.getProperty("lucandra.id.field", delimeter
-                                                                            + "KEY" + delimeter);
     public static final String               documentMetaField      = delimeter + "META" + delimeter;
-    public static final ByteBuffer           documentMetaFieldBytes;
+    public static final ByteBuffer           documentMetaFieldBytes = ByteBufferUtil.bytes(documentMetaField);
 
     public static final boolean              indexHashingEnabled    = Boolean.valueOf(System.getProperty(
             "index.hashing", "true"));
     
+    public static  int                       retryAttempts             = Integer.valueOf(properties.getProperty("cassandra.retries", "1024"));
+    public static  int                       retryAttemptSleep         = Integer.valueOf(properties.getProperty("cassandra.retries.sleep", "100")); 
+    
     //how often to check for cache invalidation
-    public static int   cacheInvalidationInterval = 1000;//ms
+    public static int                        cacheInvalidationInterval = Integer.valueOf(properties.getProperty("solandra.cache.invalidation.check.interval", "1000"));
   
-    public static final QueryPath            metaColumnPath;
+    public static final ConsistencyLevel     consistency               = ConsistencyLevel.valueOf(properties.getProperty("solandra.consistency", ConsistencyLevel.ONE.name()));
+    
+    
+    public static final QueryPath            metaColumnPath            = new QueryPath(CassandraUtils.docColumnFamily);
 
     public static final Charset UTF_8 = Charset.forName("UTF-8");
-
-    static
-    {
-        try
-        {
-            delimeterBytes = delimeter.getBytes("UTF-8");
-            documentMetaFieldBytes = ByteBuffer.wrap(documentMetaField.getBytes("UTF-8"));
-            finalTokenBytes = ByteBuffer.wrap(finalToken.getBytes("UTF-8"));
-            metaColumnPath = new QueryPath(CassandraUtils.docColumnFamily);
-        }
-        catch (UnsupportedEncodingException e)
-        {
-            throw new RuntimeException("UTF-8 not supported by this JVM");
-        }
-    }
-
-    public static final int                  keySigBytes            = md5hash(documentMetaFieldBytes).toString().length();
 
     private static final Logger              logger                 = Logger.getLogger(CassandraUtils.class);
 
     private static boolean                   cassandraStarted       = false;
 
+    
+    public static synchronized void setStartup(){
+    	if(cassandraStarted){
+    		throw new RuntimeException("You attempted to set the casandra started flag after it has started");
+    	}
+    	
+    	cassandraStarted = true;
+    }
+    
     // Start Cassandra up!!!
     public static synchronized void startup()
     {
@@ -211,17 +217,17 @@ public class CassandraUtils
 
     public static final int byteArrayToInt(ByteBuffer b)
     {
-        return (b.array()[b.position() + b.arrayOffset() + 0] << 24)
-                + ((b.array()[b.position() + b.arrayOffset() + 1] & 0xFF) << 16)
-                + ((b.array()[b.position() + b.arrayOffset() + 2] & 0xFF) << 8)
-                + (b.array()[b.position() + b.arrayOffset() + 3] & 0xFF);
+        return (b.get(b.position() + 0) << 24)
+                + ((b.get(b.position() + 1) & 0xFF) << 16)
+                + ((b.get(b.position() + 2) & 0xFF) << 8)
+                + (b.get(b.position() + 3) & 0xFF);
     }
 
     public static final ByteBuffer intVectorToByteArray(List<Number> intVector)
     {
 
         if (intVector.size() == 0)
-            return FBUtilities.EMPTY_BYTE_BUFFER;
+            return ByteBufferUtil.EMPTY_BYTE_BUFFER;
 
         if (intVector.get(0) instanceof Byte)
             return ByteBuffer.wrap(new byte[] { intVector.get(0).byteValue() });
@@ -251,10 +257,10 @@ public class CassandraUtils
         int[] intArray = new int[b.remaining() / 4];
         int idx = 0;
 
-        for (int i = b.position() + b.arrayOffset(); i < b.limit() + b.arrayOffset(); i += 4)
+        for (int i = b.position(); i < b.limit(); i += 4)
         {
-            intArray[idx++] = (b.array()[i] << 24) + ((b.array()[i + 1] & 0xFF) << 16)
-                    + ((b.array()[i + 2] & 0xFF) << 8) + (b.array()[i + 3] & 0xFF);
+            intArray[idx++] = (b.get(i) << 24) + ((b.get(i + 1) & 0xFF) << 16)
+                    + ((b.get(i + 2) & 0xFF) << 8) + (b.get(i + 3) & 0xFF);
         }
 
         return intArray;
@@ -313,7 +319,7 @@ public class CassandraUtils
     {
 
         int attempts = 0;
-        while (attempts++ < 10)
+        while (attempts++ < retryAttempts)
         {
 
             try
@@ -333,7 +339,7 @@ public class CassandraUtils
 
             try
             {
-                Thread.sleep(1000);
+                Thread.sleep(retryAttemptSleep);
             }
             catch (InterruptedException e)
             {
@@ -346,15 +352,14 @@ public class CassandraUtils
 
     public static List<Row> robustRead(ConsistencyLevel cl, ReadCommand... rc) throws IOException
     {      
-        final int maxTries = 1024;
         List<Row> rows = null;
         int attempts = 0;
-        while (attempts++ < maxTries)
+        while (attempts++ < retryAttempts)
         {
             try
             {
-                rows = StorageProxy.readProtocol(Arrays.asList(rc), cl);
-                break;
+                rows = StorageProxy.read(Arrays.asList(rc), cl);
+                return rows;
             }
             catch (UnavailableException e1)
             {
@@ -371,7 +376,7 @@ public class CassandraUtils
 
             try
             {
-                Thread.sleep(100);
+                Thread.sleep(retryAttemptSleep);
             }
             catch (InterruptedException e)
             {
@@ -379,10 +384,7 @@ public class CassandraUtils
             }
         }
 
-        if (attempts >= maxTries)
-            throw new IOException("Read command failed after 100 attempts");
-
-        return rows;
+        throw new IOException("Read command failed after "+retryAttempts+"attempts");
     }
 
     public static List<Row> robustRead(ByteBuffer key, QueryPath qp, List<ByteBuffer> columns, ConsistencyLevel cl) throws IOException
@@ -398,8 +400,7 @@ public class CassandraUtils
     public static Object fromBytes(ByteBuffer data) throws IOException, ClassNotFoundException
     {
 
-        ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data.array(), data.position()+data.arrayOffset(), data
-                .remaining()));
+        ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(ByteBufferUtil.getArray(data)));
         Object o = ois.readObject();
         ois.close();
         return o;
@@ -425,7 +426,15 @@ public class CassandraUtils
     public static ByteBuffer hashBytes(byte[] key)
     {      
        
-            byte[] hashBytes = md5hash(ByteBuffer.wrap(key)).toString().getBytes();
+            byte[] hashBytes = null;
+            try
+            {
+                hashBytes = md5hash(ByteBuffer.wrap(key)).toString().getBytes("UTF-8");
+            }
+            catch (UnsupportedEncodingException e)
+            {
+                throw new RuntimeException(e);
+            }
             
             ByteBuffer hashBuf = ByteBuffer.allocate(hashBytes.length+delimeterBytes.length);
             hashBuf.put(hashBytes);
@@ -488,6 +497,7 @@ public class CassandraUtils
             currentLen += keys[i].length;
         }
 
+       
         return ByteBuffer.wrap(hashedKey);
     }
 
@@ -516,11 +526,11 @@ public class CassandraUtils
         if(length == 0)
             return 0;
         
-        byte b = buf.array()[buf.position()+buf.arrayOffset()];
+        byte b = buf.get(buf.position());
         int i = b & 0x7F;
         for (int pos = 1, shift = 7; (b & 0x80) != 0 && pos < length; shift += 7, pos++)
         {
-            b = buf.array()[buf.position() + buf.arrayOffset() + pos];
+            b = buf.get(buf.position() + pos);
             i |= (b & 0x7F) << shift;
         }
 

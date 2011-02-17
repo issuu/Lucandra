@@ -35,10 +35,16 @@ import lucandra.dht.RandomPartitioner;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.filter.QueryPath;
+import org.apache.cassandra.thrift.ConsistencyLevel;
+import org.apache.cassandra.utils.ByteBufferUtil;
+
 public class IndexManagerTests
 {
-    static String indexName = String.valueOf(System.nanoTime());
-
+    static String indexName = String.valueOf(System.nanoTime()); 
+    
+   
     @Test
     public void testCustomRandomPartitioner()
     {
@@ -90,17 +96,19 @@ public class IndexManagerTests
 
         CassandraIndexManager idx = new CassandraIndexManager(4);
 
-        Set<Long> all = new HashSet<Long>(CassandraUtils.maxDocsPerShard);
+        Set<Long> all = new HashSet<Long>(CassandraIndexManager.maxDocsPerShard);
 
         long startTime = System.currentTimeMillis();
 
         Map<Integer, AtomicInteger> shardStats = new HashMap<Integer, AtomicInteger>();
         
         // Add
-        for (int i = 0; i < CassandraUtils.maxDocsPerShard - CassandraIndexManager.reserveSlabSize; i++)
+        for (int i = 0; i < CassandraIndexManager.maxDocsPerShard; i++)
         {
-            long id = idx.getNextId(indexName, "i" + i);
+            Long id = idx.getNextId(indexName, "i" + i);
             
+            assertNotNull(id);
+                        
             //System.err.println(CassandraIndexManager.getShardFromDocId(id));
             AtomicInteger counter = shardStats.get(CassandraIndexManager.getShardFromDocId(id));
             if(counter == null)
@@ -123,12 +131,12 @@ public class IndexManagerTests
         assertEquals(3, CassandraIndexManager.getShardFromDocId(idx.getMaxId(indexName)));
 
         // Update
-        for (int i = 0; i < CassandraUtils.maxDocsPerShard - CassandraIndexManager.reserveSlabSize; i++)
+        for (int i = 0; i < CassandraIndexManager.maxDocsPerShard; i++)
         {
             Long id = idx.getId(indexName, "i" + i);
 
-            assertNotNull(id);
-
+            assertNotNull("i"+i, id);     
+            
             if (i % 10000 == 0)
             {
                 long endTime = System.currentTimeMillis();
@@ -159,9 +167,9 @@ public class IndexManagerTests
 
                     long startTime = System.currentTimeMillis();
 
-                    Set<Long> all = new HashSet<Long>(CassandraUtils.maxDocsPerShard);
+                    Set<Long> all = new HashSet<Long>(CassandraIndexManager.maxDocsPerShard);
 
-                    for (int i = 0; i < CassandraUtils.maxDocsPerShard / 10; i++)
+                    for (int i = 0; i < CassandraIndexManager.maxDocsPerShard / 10; i++)
                     {
                         Long id = null;
                         try
@@ -196,7 +204,7 @@ public class IndexManagerTests
         {
             List<Future<Set<Long>>> results = svc.invokeAll(callables);
 
-            Set<Long> all = new HashSet<Long>(CassandraUtils.maxDocsPerShard);
+            Set<Long> all = new HashSet<Long>(CassandraIndexManager.maxDocsPerShard);
 
             for (Future<Set<Long>> result : results)
             {

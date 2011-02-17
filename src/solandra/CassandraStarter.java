@@ -17,19 +17,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package lucandra.cluster;
+package solandra;
 
 import lucandra.CassandraUtils;
 
 
-public class IndexManagerService
-{
-    public static final CassandraIndexManager instance;
-    public static final Integer               shardsAtOnce = Integer.valueOf(CassandraUtils.properties.getProperty("solandra.shards.at.once", "4"));
+public class CassandraStarter {
 
-    static
-    {   
-        instance = new CassandraIndexManager(shardsAtOnce);
-    }
+	/**
+	 * @param args
+	 */
+	public static void main(String[] args) {
+
+		String context = System.getProperty("solandra.context", "/solandra");
+		
+		int port = Integer.parseInt(System.getProperty("solandra.port", "8983"));
+		
+		try {
+			CassandraUtils.startup();
+
+			JettySolandraRunner jetty = new JettySolandraRunner(context, port);
+			jetty.start(false);
+		} catch (Exception ex) {
+			ex.printStackTrace();
+		}
+
+	}
 
 }

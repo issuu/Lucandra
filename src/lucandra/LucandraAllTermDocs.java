@@ -24,6 +24,8 @@ import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
 
+import lucandra.cluster.CassandraIndexManager;
+
 import org.apache.cassandra.db.ExpiringColumn;
 import org.apache.cassandra.db.IColumn;
 import org.apache.cassandra.db.ReadCommand;
@@ -45,7 +47,7 @@ public class LucandraAllTermDocs implements TermDocs
     private String        indexName;
     private int           idx;      // tracks where we are in the doc buffer
     private int           fillSize; // tracks how much the buffer was filled with docs from cassandra
-    private int[]         docBuffer = new int[CassandraUtils.maxDocsPerShard+1]; // max number of docs we pull
+    private int[]         docBuffer = new int[CassandraIndexManager.maxDocsPerShard+1]; // max number of docs we pull
     private int           doc       = -1;
     private int           maxDoc;
 
@@ -140,14 +142,14 @@ public class LucandraAllTermDocs implements TermDocs
     private void fillDocBuffer() throws IOException
     {
         
-        ByteBuffer key = CassandraUtils.hashKeyBytes(indexName.getBytes(), CassandraUtils.delimeterBytes, "ids".getBytes());
+        ByteBuffer key = CassandraUtils.hashKeyBytes(indexName.getBytes("UTF-8"), CassandraUtils.delimeterBytes, "ids".getBytes("UTF-8"));
 
         ReadCommand cmd = new SliceFromReadCommand(CassandraUtils.keySpace, key,
-                new ColumnParent(CassandraUtils.schemaInfoColumnFamily), FBUtilities.EMPTY_BYTE_BUFFER,
-                FBUtilities.EMPTY_BYTE_BUFFER, false, Integer.MAX_VALUE);
+                new ColumnParent(CassandraUtils.schemaInfoColumnFamily), ByteBufferUtil.EMPTY_BYTE_BUFFER,
+                ByteBufferUtil.EMPTY_BYTE_BUFFER, false, Integer.MAX_VALUE);
 
         
-        List<Row> rows = CassandraUtils.robustRead(ConsistencyLevel.QUORUM, cmd);
+        List<Row> rows = CassandraUtils.robustRead(CassandraUtils.consistency, cmd);
 
         if(rows.isEmpty())
             return;
@@ -158,8 +160,9 @@ public class LucandraAllTermDocs implements TermDocs
             return;
         
         for(IColumn sc : row.cf.getSortedColumns()){
-            Integer id   = Integer.valueOf(ByteBufferUtil.string(sc.name()));
-            
+                        
+            Integer id  = Integer.valueOf(ByteBufferUtil.string(sc.name()));
+                       
             for(IColumn c : sc.getSubColumns())
             {
                 //valid id

@@ -22,6 +22,7 @@ package lucandra.cluster;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
@@ -54,13 +55,15 @@ public class CassandraIndexManager
 
     private int[]                                                    randomSeq;
 
-    public static final int                                          reserveSlabSize = (int) Math.pow(2, 10);
-    private final int                                                offsetSlots     = CassandraUtils.maxDocsPerShard
-                                                                                             / reserveSlabSize;
+    public static final int                                          maxDocsPerShard = Integer.valueOf(CassandraUtils.properties.getProperty("solandra.maximum.docs.per.shard","131072"));
+    public static final int                                          reserveSlabSize = Integer.valueOf(CassandraUtils.properties.getProperty("solandra.index.id.reserve.size", "16384"));
+    
+    private final int                                                offsetSlots     = maxDocsPerShard / reserveSlabSize;
     private final int                                                expirationTime  = 120;                                          // seconds
 
     private final ConcurrentMap<String, LinkedBlockingQueue<IdInfo>> indexReserves   = new MapMaker().makeMap();
     private final ConcurrentMap<String, ShardInfo>                   indexShards     = new MapMaker().makeMap();
+
 
     private static final Logger                                      logger          = Logger
                                                                                              .getLogger(CassandraIndexManager.class);
@@ -112,11 +115,19 @@ public class CassandraIndexManager
         logger.info("Shards at once: " + shardsAtOnce);
 
         // get our unique sequence
-        Random r = new Random(getNodeSeed(getToken()));
+        Random r = null;
+        try
+        {
+            r = new Random(getNodeSeed(getToken()));
+        }
+        catch (IOException e)
+        {
+            throw new RuntimeException(e);
+        }
 
         randomSeq = new int[offsetSlots];
 
-        for (int i = 0, offset = 0; i < CassandraUtils.maxDocsPerShard; i++)
+        for (int i = 0, offset = 0; i < CassandraIndexManager.maxDocsPerShard; i++)
         {
             if (i % reserveSlabSize == 0)
             {
@@ -146,11 +157,11 @@ public class CassandraIndexManager
             }
         }
 
-        ByteBuffer key = CassandraUtils.hashKeyBytes(indexName.getBytes(), CassandraUtils.delimeterBytes, "shards"
-                .getBytes());
+        ByteBuffer key = CassandraUtils.hashKeyBytes(indexName.getBytes("UTF-8"), CassandraUtils.delimeterBytes, "shards"
+                .getBytes("UTF-8"));
 
         ReadCommand cmd = new SliceFromReadCommand(CassandraUtils.keySpace, key, new ColumnParent(
-                CassandraUtils.schemaInfoColumnFamily), FBUtilities.EMPTY_BYTE_BUFFER, FBUtilities.EMPTY_BYTE_BUFFER,
+                CassandraUtils.schemaInfoColumnFamily), ByteBufferUtil.EMPTY_BYTE_BUFFER, ByteBufferUtil.EMPTY_BYTE_BUFFER,
                 false, 100);
 
         List<Row> rows = CassandraUtils.robustRead(ConsistencyLevel.QUORUM, cmd);
@@ -177,9 +188,9 @@ public class CassandraIndexManager
 
                     // goto each shard and get local offset
                     cmd = new SliceFromReadCommand(CassandraUtils.keySpace, CassandraUtils.hashKeyBytes((indexName
-                            + "~" + shardStr).getBytes(), CassandraUtils.delimeterBytes, "shards".getBytes()),
-                            new ColumnParent(CassandraUtils.schemaInfoColumnFamily), FBUtilities.EMPTY_BYTE_BUFFER,
-                            FBUtilities.EMPTY_BYTE_BUFFER, false, 100);
+                            + "~" + shardStr).getBytes("UTF-8"), CassandraUtils.delimeterBytes, "shards".getBytes("UTF-8")),
+                            new ColumnParent(CassandraUtils.schemaInfoColumnFamily), ByteBufferUtil.EMPTY_BYTE_BUFFER,
+                            ByteBufferUtil.EMPTY_BYTE_BUFFER, false, 100);
 
                     List<Row> lrows = CassandraUtils.robustRead(ConsistencyLevel.QUORUM, cmd);
 
@@ -262,7 +273,7 @@ public class CassandraIndexManager
                 highest = e.getKey();
         }
 
-        return (CassandraUtils.maxDocsPerShard * highest);
+        return (CassandraIndexManager.maxDocsPerShard * highest);
     }
 
     public Long getId(String indexName, String key) throws IOException
@@ -272,10 +283,10 @@ public class CassandraIndexManager
 
     public Long checkForUpdate(String indexName, String key) throws IOException
     {
-        ByteBuffer keyCol = ByteBuffer.wrap(key.getBytes());
-        ByteBuffer keyKey = CassandraUtils.hashKeyBytes((indexName + "~" + key).getBytes(),
-                CassandraUtils.delimeterBytes, "keys".getBytes());
-
+        ByteBuffer keyCol = ByteBuffer.wrap(key.getBytes("UTF-8"));
+        ByteBuffer keyKey = CassandraUtils.hashKeyBytes((indexName + "~" + key).getBytes("UTF-8"),
+                CassandraUtils.delimeterBytes, "keys".getBytes("UTF-8"));
+     
         List<Row> rows = CassandraUtils.robustRead(keyKey, new QueryPath(CassandraUtils.schemaInfoColumnFamily), Arrays
                 .asList(keyCol), ConsistencyLevel.QUORUM);
 
@@ -321,7 +332,7 @@ public class CassandraIndexManager
         IdInfo idInfo = null;
 
         int attempts = 0;
-        while (attempts < reserveSlabSize)
+        while (attempts < CassandraUtils.retryAttempts)
         {
             shards = getShardInfo(indexName, false);
             nodes = pickAShard(shards);
@@ -340,25 +351,27 @@ public class CassandraIndexManager
         if (idInfo == null)
             throw new IllegalStateException(myToken + ": Unable to reserve an id");
 
-        ByteBuffer idCol = ByteBuffer.wrap(String.valueOf(idInfo.id).getBytes());
-        ByteBuffer keyCol = ByteBuffer.wrap(key.getBytes());
+        ByteBuffer idCol = ByteBufferUtil.bytes(String.valueOf(idInfo.id));
+        ByteBuffer keyCol = ByteBuffer.wrap(key.getBytes("UTF-8"));
 
         // Permanently mark the id as taken
-        ByteBuffer idKey = CassandraUtils.hashKeyBytes((indexName + "~" + idInfo.node.shard).getBytes(),
-                CassandraUtils.delimeterBytes, "ids".getBytes());
+        ByteBuffer idKey = CassandraUtils.hashKeyBytes((indexName + "~" + idInfo.node.shard).getBytes("UTF-8"),
+                CassandraUtils.delimeterBytes, "ids".getBytes("UTF-8"));
 
         RowMutation rm = new RowMutation(CassandraUtils.keySpace, idKey);
-        rm.add(new QueryPath(CassandraUtils.schemaInfoColumnFamily, idCol, ByteBuffer.wrap(myToken.getBytes())),
+        rm.add(new QueryPath(CassandraUtils.schemaInfoColumnFamily, idCol, ByteBuffer.wrap(myToken.getBytes("UTF-8"))),
                 keyCol, System.nanoTime());
 
         // Permanently link the key to the id
-        ByteBuffer keyKey = CassandraUtils.hashKeyBytes((indexName + "~" + key).getBytes(),
-                CassandraUtils.delimeterBytes, "keys".getBytes());
-        Long val = new Long(idInfo.id + (idInfo.node.shard * CassandraUtils.maxDocsPerShard));
-        ByteBuffer idVal = ByteBuffer.wrap(val.toString().getBytes());
+        ByteBuffer keyKey = CassandraUtils.hashKeyBytes((indexName + "~" + key).getBytes("UTF-8"),
+                CassandraUtils.delimeterBytes, "keys".getBytes("UTF-8"));
+        
+        Long val = new Long(idInfo.id + (idInfo.node.shard * CassandraIndexManager.maxDocsPerShard));
+        
+        ByteBuffer idVal = ByteBuffer.wrap(val.toString().getBytes("UTF-8"));
 
         RowMutation rm2 = new RowMutation(CassandraUtils.keySpace, keyKey);
-        rm2.add(new QueryPath(CassandraUtils.schemaInfoColumnFamily, keyCol, idVal), FBUtilities.EMPTY_BYTE_BUFFER,
+        rm2.add(new QueryPath(CassandraUtils.schemaInfoColumnFamily, keyCol, idVal), CassandraUtils.finalTokenBytes,
                 System.nanoTime());
 
         // Update last offset info for this shard
@@ -377,11 +390,12 @@ public class CassandraIndexManager
         RowMutation[] rms = new RowMutation[3];
 
         Long val = getNextId(indexName, key, rms);
-        
-        //TODO: Delayed Insert!
-        //Checks for more recent updates and disregards the older ones
-        CassandraUtils.robustInsert(ConsistencyLevel.QUORUM, rms);
-        
+
+
+        // TODO: Delayed Insert!
+        // Checks for more recent updates and disregards the older ones
+
+        CassandraUtils.robustInsert(CassandraUtils.consistency, rms);
         return val;
     }
 
@@ -401,7 +415,7 @@ public class CassandraIndexManager
         CassandraUtils.robustInsert(ConsistencyLevel.QUORUM, rms.toArray(new RowMutation[] {}));
     }
 
-    private IdInfo nextReservedId(String indexName, NodeInfo[] shards, String myToken)
+    private IdInfo nextReservedId(String indexName, NodeInfo[] shards, String myToken) throws IOException
     {
         if (logger.isDebugEnabled())
             logger.debug("in reserveIds for index " + indexName);
@@ -507,16 +521,16 @@ public class CassandraIndexManager
                     }
 
                 });                
-                ByteBuffer key = CassandraUtils.hashKeyBytes((indexName + "~" + node.shard).getBytes(),
-                        CassandraUtils.delimeterBytes, "ids".getBytes());
+                ByteBuffer key = CassandraUtils.hashKeyBytes((indexName + "~" + node.shard).getBytes("UTF-8"),
+                        CassandraUtils.delimeterBytes, "ids".getBytes("UTF-8"));
 
                 // Write the reserves
                 RowMutation rm = new RowMutation(CassandraUtils.keySpace, key);
 
-                ByteBuffer id = ByteBuffer.wrap(String.valueOf(nextOffset).getBytes());
-                ByteBuffer off = ByteBuffer.wrap(String.valueOf(nextOffset).getBytes());
+                ByteBuffer id = ByteBufferUtil.bytes(String.valueOf(nextOffset));
+                ByteBuffer off = id;
 
-                rm.add(new QueryPath(CassandraUtils.schemaInfoColumnFamily, id, ByteBuffer.wrap(myToken.getBytes())),
+                rm.add(new QueryPath(CassandraUtils.schemaInfoColumnFamily, id, ByteBuffer.wrap(myToken.getBytes("UTF-8"))),
                         off, System.nanoTime(), expirationTime);
 
                 CassandraUtils.robustInsert(ConsistencyLevel.QUORUM, rm);
@@ -524,7 +538,7 @@ public class CassandraIndexManager
                 // Read the columns back
                 IColumn supercol = null;
                 int attempts = 0;
-                while (supercol == null && attempts < 10)
+                while (supercol == null && attempts < CassandraUtils.retryAttempts)
                 {
                     try
                     {
@@ -571,7 +585,14 @@ public class CassandraIndexManager
                     if (!(c instanceof ExpiringColumn) && !(c instanceof DeletedColumn))
                     {
                         if (logger.isDebugEnabled())
-                            logger.debug(offset + " was taken by " + ByteBufferUtil.string(c.name()));
+                            try
+                            {
+                                logger.debug(offset + " was taken by " + ByteBufferUtil.string(c.name()));
+                            }
+                            catch (CharacterCodingException e)
+                            {
+                                
+                            }
 
                         winningToken = null;
                         break;
@@ -593,8 +614,19 @@ public class CassandraIndexManager
                     }
                 }
 
+                
+                String winningTokenStr;
+                try
+                {
+                    winningTokenStr = winningToken == null ? "" : ByteBufferUtil.string(winningToken);
+                }
+                catch (CharacterCodingException e)
+                {
+                   throw new RuntimeException(e);
+                }
+                
                 // we won!
-                if (winningToken != null && ByteBufferUtil.string(winningToken).equals(myToken))
+                if (winningToken != null && winningTokenStr.equals(myToken))
                 {
                     int numReserved = 0;
                     for (int i = nextOffset; i == nextOffset || i % reserveSlabSize != 0; i++)
@@ -683,8 +715,8 @@ public class CassandraIndexManager
 
     private int getRandomSequenceOffset(int offset)
     {
-        if (offset >= CassandraUtils.maxDocsPerShard)
-            throw new IllegalArgumentException("offset can not be > " + CassandraUtils.maxDocsPerShard);
+        if (offset >= CassandraIndexManager.maxDocsPerShard)
+            throw new IllegalArgumentException("offset can not be > " + CassandraIndexManager.maxDocsPerShard);
 
         for (int randomSeqOffset = 0; randomSeqOffset < randomSeq.length; randomSeqOffset++)
         {
@@ -817,15 +849,15 @@ public class CassandraIndexManager
         return dupNodes == null ? nodes : dupNodes;
     }
 
-    private RowMutation updateNodeOffset(String indexName, String myToken, NodeInfo node, Integer offset)
+    private RowMutation updateNodeOffset(String indexName, String myToken, NodeInfo node, Integer offset) throws IOException
     {
         // Update last offset info for this shard
-        ByteBuffer shardKey = CassandraUtils.hashKeyBytes(indexName.getBytes(), CassandraUtils.delimeterBytes, "shards"
-                .getBytes());
+        ByteBuffer shardKey = CassandraUtils.hashKeyBytes(indexName.getBytes("UTF-8"), CassandraUtils.delimeterBytes, "shards"
+                .getBytes("UTF-8"));
         RowMutation rm = new RowMutation(CassandraUtils.keySpace, shardKey);
 
         rm.add(new QueryPath(CassandraUtils.schemaInfoColumnFamily, ByteBuffer.wrap(String.valueOf(node.shard)
-                .getBytes()), ByteBuffer.wrap(myToken.getBytes())), ByteBuffer.wrap(String.valueOf(offset).getBytes()),
+                .getBytes("UTF-8")), ByteBuffer.wrap(myToken.getBytes("UTF-8"))), ByteBuffer.wrap(String.valueOf(offset).getBytes("UTF-8")),
                 System.nanoTime());
 
         // update locally
@@ -841,7 +873,7 @@ public class CassandraIndexManager
         return rm;
     }
 
-    private int getNodeSeed(String token)
+    private int getNodeSeed(String token) throws IOException
     {
         // Calculate the seed from the token
         MessageDigest md;
@@ -854,7 +886,7 @@ public class CassandraIndexManager
             throw new RuntimeException(e);
         }
 
-        md.update(token.getBytes());
+        md.update(token.getBytes("UTF-8"));
 
         return new BigInteger(1, md.digest()).intValue();
     }
@@ -892,11 +924,11 @@ public class CassandraIndexManager
 
     public static int getShardFromDocId(long docId)
     {
-        return (int) Math.floor(docId / CassandraUtils.maxDocsPerShard);
+        return (int) Math.floor(docId / CassandraIndexManager.maxDocsPerShard);
     }
 
     public static int getShardedDocId(long docId)
     {
-        return (int) docId % CassandraUtils.maxDocsPerShard;
+        return (int) docId % CassandraIndexManager.maxDocsPerShard;
     }
 }

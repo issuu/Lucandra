@@ -16,11 +16,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#
-#Increase this to increase the number of shards loaded at once
-#
-SHARDS_AT_ONCE="2"
-
 if [ "x$SOLANDRA_INCLUDE" = "x" ]; then
     for include in /usr/share/solandra/solandra.in.sh \
                    /usr/local/share/solandra/solandra.in.sh \
@@ -45,7 +40,7 @@ fi
 
 
 # Parse any command line options.
-args=`getopt fbhdsp: "$@"`
+args=`getopt fbhdp: "$@"`
 eval set -- "$args"
 
 while true; do
@@ -74,10 +69,6 @@ while true; do
         -d)
             debug="yes"
             shift
-        ;;
-        -s)
-            SHARDS_AT_ONCE="$2"
-            shift 2
         ;;
         --)
             shift
@@ -109,15 +100,17 @@ fi
 if [ "x$pidpath" != "x" ]; then
     solandra_parms="$solandra_parms -Dcassandra-pidfile=$pidpath"
 fi
+
+solandra_parms="$solandra_parms -Dlog4j.configuration=log4j.properties -Dlog4j.defaultInitOverride=true"
     
 # The solandra-foreground option will tell Cassandra not
 # to close stdout/stderr, but it's up to us not to background.
 if [ "x$foreground" != "x" ]; then
     solandra_parms="$solandra_parms -Dcassandra-foreground=yes"
-    exec $JAVA $JVM_OPTS $solandra_parms -Dshards.at.once=$SHARDS_AT_ONCE -jar start.jar $LOGGING etc/jetty.xml
+    exec $JAVA $JVM_OPTS $solandra_parms -jar start.jar $LOGGING etc/jetty.xml
 # Startup Solandra, background it, and write the pid.
 else
-    exec $JAVA $JVM_OPTS $solandra_parms -Dshards.at.once=$SHARDS_AT_ONCE -jar start.jar $LOGGING etc/jetty.xml <&- &
+    exec $JAVA $JVM_OPTS $solandra_parms -jar start.jar $LOGGING etc/jetty.xml <&- &
     [ ! -z $pidfile ] && printf "%d" $! > $pidfile
 fi
 
@@ -126,6 +119,6 @@ then
     sleep 1
     echo "Waiting 10 seconds for solandra to start before bootstrapping schema..."
     sleep 10
-    cd cassandra-tools && ./cassandra-cli --host=localhost < solandra.cml
+    cd cassandra-tools && ./cassandra-cli --host localhost < solandra.cml
     echo "Solandra ready"
 fi
